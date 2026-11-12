@@ -64,39 +64,79 @@ enum {evtKeyboardBacklight = 1, evtAirplaneMode };  //Clevo Server Event Type
 class EXPORT ClevoService : public IOService
 {
     OSDeclareDefaultStructors(ClevoService)
-    
+
 public:
-	virtual bool        init(OSDictionary *dictionary = 0) override;
-	virtual IOService * probe(IOService *provider, SInt32 *score) override;
-	virtual bool        start(IOService *provider) override;
-	virtual void        stop(IOService *provider) override;
-    virtual IOReturn    message( UInt32 type, IOService *provider, void *argument) override;
-    virtual void        kbdClearKeyboards();
-    virtual void        kbdSetUpBacklight();
-    virtual void        kbdLightLevel(UInt8 newLevel);
+    virtual bool init(OSDictionary *dictionary = 0) override;
+    virtual IOService *probe(IOService *provider, SInt32 *score) override;
+    virtual bool start(IOService *provider) override;
+    virtual void stop(IOService *provider) override;
+
+    virtual IOReturn message(
+        UInt32 type,
+        IOService *provider,
+        void *argument
+    ) override;
+
+    virtual void kbdClearKeyboards();
+    virtual void kbdSetUpBacklight();
+    virtual void kbdLightLevel(UInt8 newLevel);
+    virtual void kbdRestoreBacklight();
 
 protected:
-    IOWorkLoop          * gWorkLoop;
-    IOTimerEventSource  * gNVRAMTimer;
-    OSArray             * loggedKeyboards;
-    UInt32              gOldKBLT, gKBDInUse;
-    UInt8               gKBDLevel[4], gKBDDimmingLevel;
-    u_int32_t           vendorID;
+    IOWorkLoop *gWorkLoop;
+    IOTimerEventSource *gNVRAMTimer;
+    IOTimerEventSource *gKBDDimTimer;
 
-    bool    setVendorID(const char *vendorCode);
-    bool    sendUserLandMessage(int type, int param1, int param2);
-    void    ACPI_Send(uint32_t arg0, uint32_t arg1, uint32_t arg2);
-    void    saveNVRAM();
-    void    kbdTimerFired();
-    void    kbdONOFF();
-    void    kbdSetColor();
-    void    loadConfiguration();
-    OSObject  * translateEntry(OSObject* obj);
-    OSObject  * translateArray(OSArray* array);
+    UInt8 gKBDCurrentHWLevel;
+    UInt8 gKBDFadeStartLevel;
+    UInt8 gKBDFadeTargetLevel;
+    UInt8 gKBDFadeStep;
+
+    bool gKBDFading;
+    bool gKBDFadeOut;
     
-    static bool kbdNotificationHandler(void * target, void * refCon, IOService * newService, IONotifier * notifier);
-    static bool kbdTerminatedNotificationHandler(void * target, void * refCon, IOService * newService, IONotifier * notifier);
-    
+    // Animation routines
+    void kbdSetHardwareLevel(UInt8 level);
+    void kbdStartFade(UInt8 targetLevel, bool fadeOut);
+    void kbdDimTimerFired();
+
+    OSArray *loggedKeyboards;
+
+    UInt32 gOldKBLT, gKBDInUse;
+
+    UInt8 gKBDLevel[4], gKBDDimmingLevel;
+
+    u_int32_t vendorID;
+
+    bool setVendorID(const char *vendorCode);
+    bool sendUserLandMessage(int type, int param1, int param2);
+
+    void ACPI_Send(uint32_t arg0, uint32_t arg1, uint32_t arg2);
+    void saveNVRAM();
+
+    void kbdTimerFired();
+
+    void kbdONOFF();
+    void kbdSetColor();
+
+    void loadConfiguration();
+
+    OSObject *translateEntry(OSObject *obj);
+    OSObject *translateArray(OSArray *array);
+
+    static bool kbdNotificationHandler(
+        void *target,
+        void *refCon,
+        IOService *newService,
+        IONotifier *notifier
+    );
+
+    static bool kbdTerminatedNotificationHandler(
+        void *target,
+        void *refCon,
+        IOService *newService,
+        IONotifier *notifier
+    );
 };
 
 static  IOACPIPlatformDevice          * device;
@@ -115,4 +155,4 @@ void logAction(OSObject *,unsigned,unsigned,unsigned,unsigned,
 void specialAction(OSObject *,unsigned,unsigned,
                    unsigned,unsigned,UInt64,bool,AbsoluteTime,OSObject *,void *);
 
-#endif
+#endif // ClevoService_hpp
