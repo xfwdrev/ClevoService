@@ -654,15 +654,18 @@ void ClevoService::kbdDimTimerFired()
     if (gKBDFadeStep < KBD_FADE_STEPS)
         gKBDFadeStep++;
 
-    // Signed interpolation prevents unsigned underflow.
+    // Normalize animation progress to the range 0.0 - 1.0.
+    double t = (double)gKBDFadeStep / (double)KBD_FADE_STEPS;
+
+    // Smoothstep easing: 3t² - 2t³.
+    double eased = t * t * (3.0 - 2.0 * t);
+
     SInt32 start = (SInt32)gKBDFadeStartLevel;
     SInt32 target = (SInt32)gKBDFadeTargetLevel;
-
     SInt32 difference = target - start;
 
     SInt32 brightness =
-        start +
-        ((difference * (SInt32)gKBDFadeStep) / KBD_FADE_STEPS);
+        start + (SInt32)(difference * eased + (difference >= 0 ? 0.5 : -0.5));
 
     if (brightness < 0)
         brightness = 0;
@@ -674,6 +677,7 @@ void ClevoService::kbdDimTimerFired()
 
     if (gKBDFadeStep >= KBD_FADE_STEPS)
     {
+        // Guarantee the exact requested final brightness.
         kbdSetHardwareLevel(gKBDFadeTargetLevel);
 
         gKBDFading = false;
@@ -983,7 +987,7 @@ void ClevoService::kbdTimerFired(void)
 
     if (gKBDJustDim)
     {
-        kbdStartFade(gKBDDimmingLevel, true);
+        kbdStartFade(0, true);
 
         DEBUG_LOG("%s: Keyboard fade-out initiated\n", getName());
     }
