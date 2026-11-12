@@ -710,7 +710,6 @@ void ClevoService::kbdSetUpBacklight()
     kbdONOFF();
 }
 
-
 void ClevoService::kbdONOFF()
 {
     if (gKBLT & KBD_ON_MASK)
@@ -718,7 +717,12 @@ void ClevoService::kbdONOFF()
         ACPI_Send(0, SET_KB_LED, 0xE007F001);
 
         if (gKBDTimer != NULL)
-            gKBDTimer->setTimeoutMS(gKBDTime);
+        {
+            if (gDimTimerActive)
+                gKBDTimer->setTimeoutMS(gKBDTime);
+            else
+                gKBDTimer->cancelTimeout();
+        }
     }
     else
     {
@@ -982,6 +986,9 @@ void ClevoService::kbdClearKeyboards()
 
 void ClevoService::kbdTimerFired(void)
 {
+    if (!gDimTimerActive)
+        return;
+    
     if (gKBDIsOFF)
         return;
 
