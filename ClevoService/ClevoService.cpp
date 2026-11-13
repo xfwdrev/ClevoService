@@ -1295,7 +1295,7 @@ void ClevoService::kbdTimerFired(void)
 
     if (gKBDJustDim)
     {
-        kbdStartFade(0, true);
+        kbdStartFade(gKBDDimmingLevel, true);
 
         DEBUG_LOG("%s: Keyboard fade-out initiated\n", getName());
     }

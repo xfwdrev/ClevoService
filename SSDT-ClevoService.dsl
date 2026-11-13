@@ -119,6 +119,8 @@ DefinitionBlock ("", "SSDT", 1, "hack ", "CLEVO", 0x00000000)
             "KbdAutoDimTimerActive", ">y",  //AutoDim Active...
             "KbdAutoDimActive", ">y",       //Dim activated... set ">n" for OFF
             "KbdAutoDimTime", 180           //Two minutes, change it as you wish...
+            "KbdEffectMode", 0x02,          // Effect mode: 1 for Breathing, 2 for Color Cycle
+            "KbdBreatheColorMode", 0x01     // Color mode: 0 for single color, 1 for multi-color
             //"KbdDimmingLevel", 0x5,
             //"KbdLevels", Package() {0x8, 0x20, 0x60, 0xFF},
         })
