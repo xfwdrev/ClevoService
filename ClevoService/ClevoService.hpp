@@ -56,9 +56,26 @@ extern "C" {
 #define KBD_L0_LEVEL        10          //Default backlight index 0 value
 #define KBD_L1_LEVEL        32          //Default backlight index 1 value
 #define KBD_L2_LEVEL        96          //Default backlight index 2 value
-#define KBD_L3_LEVEL        248         //Default backlight index 3 value
+#define KBD_L3_LEVEL        255         //Default backlight index 3 value
+
+#define KBD_BREATHE_INTERVAL     30
+#define KBD_BREATHE_PHASE_STEPS  200
+#define KBD_BREATHE_MIN_LEVEL   0
 
 enum {evtKeyboardBacklight = 1, evtAirplaneMode };  //Clevo Server Event Type
+
+enum KBDEffectMode
+{
+    KBD_EFFECT_NONE = 0,
+    KBD_EFFECT_BREATHE = 1,
+    KBD_EFFECT_COLOR_CYCLE = 2
+};
+
+enum KBDBreatheColorMode
+{
+    KBD_BREATHE_SINGLE_COLOR = 0,
+    KBD_BREATHE_MULTI_COLOR = 1
+};
 
 // Our ClevoService Class...
 class EXPORT ClevoService : public IOService
@@ -86,7 +103,34 @@ protected:
     IOWorkLoop *gWorkLoop;
     IOTimerEventSource *gNVRAMTimer;
     IOTimerEventSource *gKBDDimTimer;
+    
+    // Keyboard effect timer.
+    IOTimerEventSource *gKBDEffectTimer;
 
+    // Keyboard effect configuration.
+    KBDEffectMode gKBDEffectMode;
+    KBDBreatheColorMode gKBDBreatheColorMode;
+
+    // Effect state.
+    bool gKBDEffectActive;
+
+    // Breathing state.
+    UInt8 gKBDAnimationBaseLevel;
+    UInt16 gKBDAnimationPhase;
+    UInt8 gKBDBreatheColorIndex;
+
+    // Color cycle state.
+    UInt16 gKBDColorPhase;
+
+    // Effect routines.
+    void kbdStartEffect();
+    void kbdStopEffect(bool restore);
+    void kbdEffectTimerFired();
+
+    // RGB hardware control.
+    void kbdSetColorRGB(UInt8 red, UInt8 green, UInt8 blue);
+
+    // Existing fade state.
     UInt8 gKBDCurrentHWLevel;
     UInt8 gKBDFadeStartLevel;
     UInt8 gKBDFadeTargetLevel;
@@ -94,8 +138,7 @@ protected:
 
     bool gKBDFading;
     bool gKBDFadeOut;
-    
-    // Animation routines
+
     void kbdSetHardwareLevel(UInt8 level);
     void kbdStartFade(UInt8 targetLevel, bool fadeOut);
     void kbdDimTimerFired();

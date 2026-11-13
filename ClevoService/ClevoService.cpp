@@ -33,6 +33,19 @@ bool ClevoService::init(OSDictionary *dict)
 
     origCallback        = NULL;
     origSpecialCallback = NULL;
+    
+    gKBDEffectTimer = NULL;
+
+    gKBDAnimationBaseLevel = 0;
+    gKBDAnimationPhase = 0;
+
+    gKBDEffectMode = KBD_EFFECT_NONE;
+    gKBDBreatheColorMode = KBD_BREATHE_SINGLE_COLOR;
+
+    gKBDEffectActive = false;
+
+    gKBDColorPhase = 0;
+    gKBDBreatheColorIndex = 0;
 
     gKBDDimmingLevel = KBD_DIM_LEVEL;
 
@@ -140,6 +153,24 @@ bool ClevoService::start(IOService *provider)
         DEBUG_LOG("%s: gKBDDimTimer failed...\n", getName());
         return false;
     }
+    
+    // Keyboard breathing animation timer.
+    gKBDEffectTimer = IOTimerEventSource::timerEventSource(
+        this,
+        OSMemberFunctionCast(
+            IOTimerEventSource::Action,
+            this,
+            &ClevoService::kbdEffectTimerFired
+        )
+    );
+
+    if ((gKBDEffectTimer == NULL) ||
+        (kIOReturnSuccess != gWorkLoop->addEventSource(gKBDEffectTimer)))
+    {
+        DEBUG_LOG("%s: gKBDEffectTimer failed...\n", getName());
+
+        OSSafeReleaseNULL(gKBDEffectTimer);
+    }
 
     // KBLT bytes: 0x0ABC
     // A: 0-8 keyboard color
@@ -224,6 +255,9 @@ bool ClevoService::start(IOService *provider)
     setProperty("KbdAutoDimTimerActive", gDimTimerActive);
     setProperty("KbdAutoDimTime", gKBDTime, 8 * sizeof(gKBDTime));
     setProperty("KbdDimmingLevel", gKBDDimmingLevel, 8 * sizeof(gKBDDimmingLevel));
+    setProperty("KbdBreathingActive", gKBDEffectMode == KBD_EFFECT_BREATHE);
+    setProperty("KbdEffectMode", (UInt32)gKBDEffectMode, 8 * sizeof(UInt32));
+    setProperty("KbdBreatheColorMode", (UInt32)gKBDBreatheColorMode, 8 * sizeof(UInt32));
 
     extern kmod_info_t kmod_info;
 
@@ -315,6 +349,19 @@ void ClevoService::stop(IOService *provider)
             gKBDDimTimer = NULL;
 
             DEBUG_LOG("%s: gKBDDimTimer Removed\n", getName());
+        }
+        
+        if (gKBDEffectTimer != NULL)
+        {
+            kbdStopEffect(false);
+
+            gKBDEffectTimer->cancelTimeout();
+            gWorkLoop->removeEventSource(gKBDEffectTimer);
+
+            gKBDEffectTimer->release();
+            gKBDEffectTimer = NULL;
+
+            DEBUG_LOG("%s: gKBDEffectTimer Removed\n", getName());
         }
 
         gWorkLoop->release();
@@ -567,6 +614,16 @@ bool ClevoService::sendUserLandMessage(
     return true;
 }
 
+static const UInt8 gKBDPalette[7][3] =
+{
+    {   0,   0, 255 }, // Blue
+    { 255,   0,   0 }, // Red
+    { 255, 255, 255 }, // White
+    { 255,   0, 255 }, // Pink
+    {   0, 255, 255 }, // Light Blue
+    {   0, 255,   0 }, // Green
+    { 255, 255,   0 }  // Yellow
+};
 
 #pragma mark ---------- Keyboard Fade Routines ----------
 
@@ -594,6 +651,9 @@ void ClevoService::kbdStartFade(UInt8 targetLevel, bool fadeOut)
 
     gKBDFadeOut = fadeOut;
     gKBDFading = true;
+    
+    // Pause any active effect while performing a manual fade.
+    kbdStopEffect(false);
 
     if (!fadeOut)
     {
@@ -682,6 +742,10 @@ void ClevoService::kbdDimTimerFired()
 
         gKBDFading = false;
         gKBDimmed = gKBDFadeOut;
+        
+        // Resume the selected effect after a completed fade-in.
+        if (!gKBDimmed && gKBDEffectMode != KBD_EFFECT_NONE)
+            kbdStartEffect();
 
         DEBUG_LOG(
             "%s: Fade %s completed: %u\n",
@@ -697,6 +761,209 @@ void ClevoService::kbdDimTimerFired()
 }
 
 
+#pragma mark ---------- Keyboard Effects ----------
+
+void ClevoService::kbdStartEffect()
+{
+    if (gKBDEffectMode == KBD_EFFECT_NONE ||
+        gKBDEffectTimer == NULL ||
+        gKBDIsOFF ||
+        !(gKBLT & KBD_ON_MASK) ||
+        gKBDimmed ||
+        gKBDFading)
+    {
+        return;
+    }
+
+    gKBDEffectTimer->cancelTimeout();
+
+    gKBDAnimationBaseLevel = gKBDLevel[gKBLT & 3];
+
+    gKBDAnimationPhase = 0;
+    gKBDColorPhase = 0;
+
+    gKBDBreatheColorIndex = (gKBLT & 0xF00) >> 8;
+
+    if (gKBDBreatheColorIndex > 6)
+        gKBDBreatheColorIndex = 0;
+
+    gKBDEffectActive = true;
+
+    if (gKBDEffectMode == KBD_EFFECT_BREATHE)
+    {
+        // Multi-color breathing starts with the selected palette color.
+        if (gKBDBreatheColorMode == KBD_BREATHE_MULTI_COLOR)
+        {
+            kbdSetColorRGB(
+                gKBDPalette[gKBDBreatheColorIndex][0],
+                gKBDPalette[gKBDBreatheColorIndex][1],
+                gKBDPalette[gKBDBreatheColorIndex][2]
+            );
+        }
+
+        // Start breathing at minimum brightness.
+        kbdSetHardwareLevel(KBD_BREATHE_MIN_LEVEL);
+    }
+    else if (gKBDEffectMode == KBD_EFFECT_COLOR_CYCLE)
+    {
+        // Color cycle must not alter the selected brightness.
+        kbdSetColorRGB(
+            gKBDPalette[gKBDBreatheColorIndex][0],
+            gKBDPalette[gKBDBreatheColorIndex][1],
+            gKBDPalette[gKBDBreatheColorIndex][2]
+        );
+    }
+
+    gKBDEffectTimer->setTimeoutMS(KBD_BREATHE_INTERVAL);
+
+    DEBUG_LOG(
+        "%s: Effect started. Mode=%u, Brightness=%u\n",
+        getName(),
+        gKBDEffectMode,
+        gKBDAnimationBaseLevel
+    );
+}
+
+
+void ClevoService::kbdStopEffect(bool restore)
+{
+    if (gKBDEffectTimer != NULL)
+        gKBDEffectTimer->cancelTimeout();
+
+    gKBDEffectActive = false;
+
+    gKBDAnimationPhase = 0;
+    gKBDColorPhase = 0;
+
+    if (restore &&
+        !gKBDIsOFF &&
+        (gKBLT & KBD_ON_MASK) &&
+        !gKBDimmed &&
+        !gKBDFading)
+    {
+        kbdSetHardwareLevel(gKBDLevel[gKBLT & 3]);
+    }
+}
+
+
+void ClevoService::kbdEffectTimerFired()
+{
+    if (!gKBDEffectActive ||
+        gKBDEffectMode == KBD_EFFECT_NONE ||
+        gKBDIsOFF ||
+        !(gKBLT & KBD_ON_MASK) ||
+        gKBDimmed ||
+        gKBDFading)
+    {
+        kbdStopEffect(false);
+        return;
+    }
+
+    // -------------------------------------------------
+    // MODE 1: BREATHING
+    // -------------------------------------------------
+
+    if (gKBDEffectMode == KBD_EFFECT_BREATHE)
+    {
+        gKBDAnimationPhase++;
+
+        if (gKBDAnimationPhase >= KBD_BREATHE_PHASE_STEPS)
+        {
+            gKBDAnimationPhase = 0;
+
+            // Advance color only after a complete fade cycle.
+            if (gKBDBreatheColorMode == KBD_BREATHE_MULTI_COLOR)
+            {
+                gKBDBreatheColorIndex++;
+
+                if (gKBDBreatheColorIndex >= 7)
+                    gKBDBreatheColorIndex = 0;
+
+                kbdSetColorRGB(
+                    gKBDPalette[gKBDBreatheColorIndex][0],
+                    gKBDPalette[gKBDBreatheColorIndex][1],
+                    gKBDPalette[gKBDBreatheColorIndex][2]
+                );
+            }
+        }
+
+        UInt32 phase = gKBDAnimationPhase;
+
+        UInt32 position =
+            (phase <= 100) ? phase : (200 - phase);
+
+        UInt32 smooth =
+            position * position * (300 - 2 * position);
+
+        UInt32 brightnessRange =
+            gKBDAnimationBaseLevel - KBD_BREATHE_MIN_LEVEL;
+
+        UInt32 brightness =
+            KBD_BREATHE_MIN_LEVEL +
+            (brightnessRange * smooth + 500000) / 1000000;
+
+        if (brightness > gKBDAnimationBaseLevel)
+            brightness = gKBDAnimationBaseLevel;
+
+        kbdSetHardwareLevel((UInt8)brightness);
+    }
+
+    // -------------------------------------------------
+    // MODE 2: COLOR CYCLE
+    // -------------------------------------------------
+
+    else if (gKBDEffectMode == KBD_EFFECT_COLOR_CYCLE)
+    {
+        // 67 frames per color transition.
+        const UInt16 COLOR_TRANSITION_STEPS = 67;
+        const UInt16 COLOR_CYCLE_STEPS =
+            7 * COLOR_TRANSITION_STEPS;
+
+        gKBDColorPhase++;
+
+        if (gKBDColorPhase >= COLOR_CYCLE_STEPS)
+            gKBDColorPhase = 0;
+
+        UInt8 colorIndex =
+            gKBDColorPhase / COLOR_TRANSITION_STEPS;
+
+        UInt8 nextColorIndex =
+            (colorIndex + 1) % 7;
+
+        UInt16 colorProgress =
+            gKBDColorPhase % COLOR_TRANSITION_STEPS;
+
+        SInt32 red =
+            gKBDPalette[colorIndex][0] +
+            ((SInt32)gKBDPalette[nextColorIndex][0] -
+             gKBDPalette[colorIndex][0]) *
+            colorProgress / COLOR_TRANSITION_STEPS;
+
+        SInt32 green =
+            gKBDPalette[colorIndex][1] +
+            ((SInt32)gKBDPalette[nextColorIndex][1] -
+             gKBDPalette[colorIndex][1]) *
+            colorProgress / COLOR_TRANSITION_STEPS;
+
+        SInt32 blue =
+            gKBDPalette[colorIndex][2] +
+            ((SInt32)gKBDPalette[nextColorIndex][2] -
+             gKBDPalette[colorIndex][2]) *
+            colorProgress / COLOR_TRANSITION_STEPS;
+
+        kbdSetColorRGB(
+            (UInt8)red,
+            (UInt8)green,
+            (UInt8)blue
+        );
+
+        // Intentionally no brightness command here.
+    }
+
+    gKBDEffectTimer->setTimeoutMS(KBD_BREATHE_INTERVAL);
+}
+
+
 #pragma mark ---------- Keyboard Backlight Routines ----------
 
 void ClevoService::kbdSetUpBacklight()
@@ -704,10 +971,13 @@ void ClevoService::kbdSetUpBacklight()
     if (gKBLT & KBD_ON_MASK)
     {
         kbdSetColor();
+        kbdONOFF();
         kbdLightLevel(gKBLT);
     }
-
-    kbdONOFF();
+    else
+    {
+        kbdONOFF();
+    }
 }
 
 void ClevoService::kbdONOFF()
@@ -726,6 +996,8 @@ void ClevoService::kbdONOFF()
     }
     else
     {
+        kbdStopEffect(false);
+        
         if (gKBDTimer != NULL)
             gKBDTimer->cancelTimeout();
 
@@ -733,6 +1005,24 @@ void ClevoService::kbdONOFF()
     }
 }
 
+void ClevoService::kbdSetColorRGB(
+    UInt8 red,
+    UInt8 green,
+    UInt8 blue
+)
+{
+    // Match the RGB byte ordering used by the existing
+    // kbdSetColor() implementation.
+    UInt32 color =
+        ((UInt32)blue << 16) |
+        ((UInt32)red << 8) |
+        (UInt32)green;
+
+    // Preserve the existing ACPI color command sequence.
+    ACPI_Send(0, SET_KB_LED, 0xF0000000 | color);
+    ACPI_Send(0, SET_KB_LED, 0xF1000000 | color);
+    ACPI_Send(0, SET_KB_LED, 0xF2000000 | color);
+}
 
 void ClevoService::kbdSetColor(void)
 {
@@ -803,13 +1093,24 @@ void ClevoService::kbdLightLevel(UInt8 newLevel)
     gKBDFadeOut = false;
     gKBDimmed = false;
 
-    kbdSetHardwareLevel(gKBDLevel[newLevel]);
-
     // Preserve the selected brightness in KBLT.
     gKBLT &= 0xFF0;
     gKBLT |= newLevel;
-}
 
+    if (gKBDEffectMode == KBD_EFFECT_BREATHE)
+    {
+        // Breathing controls brightness itself.
+        kbdStartEffect();
+    }
+    else
+    {
+        // Color Cycle and normal mode preserve manual brightness.
+        kbdSetHardwareLevel(gKBDLevel[newLevel]);
+
+        if (gKBDEffectMode == KBD_EFFECT_COLOR_CYCLE)
+            kbdStartEffect();
+    }
+}
 
 bool ClevoService::kbdTerminatedNotificationHandler(
     void *target,
@@ -1179,6 +1480,52 @@ void ClevoService::loadConfiguration()
 
     if (osBool)
         gKBDJustDim = osBool->isTrue();
+    
+    // Backward compatibility with the old breathing setting.
+    bool legacyBreatheEnabled = false;
+
+    osBool = OSDynamicCast(
+        OSBoolean,
+        config->getObject("KbdBreathingActive")
+    );
+
+    if (osBool)
+        legacyBreatheEnabled = osBool->isTrue();
+
+    // Load the selected effect mode.
+    OSNumber *effectMode = OSDynamicCast(
+        OSNumber,
+        config->getObject("KbdEffectMode")
+    );
+
+    if (effectMode)
+    {
+        UInt32 mode = effectMode->unsigned32BitValue();
+
+        if (mode <= KBD_EFFECT_COLOR_CYCLE)
+            gKBDEffectMode = (KBDEffectMode)mode;
+    }
+    else
+    {
+        // Old configurations still enable Breathe.
+        gKBDEffectMode = legacyBreatheEnabled
+            ? KBD_EFFECT_BREATHE
+            : KBD_EFFECT_NONE;
+    }
+
+    // Load the Breathe color mode.
+    OSNumber *breatheColorMode = OSDynamicCast(
+        OSNumber,
+        config->getObject("KbdBreatheColorMode")
+    );
+
+    if (breatheColorMode)
+    {
+        UInt32 mode = breatheColorMode->unsigned32BitValue();
+
+        if (mode <= KBD_BREATHE_MULTI_COLOR)
+            gKBDBreatheColorMode = (KBDBreatheColorMode)mode;
+    }
 
     OSNumber *osNum =
         OSDynamicCast(
