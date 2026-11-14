@@ -778,7 +778,6 @@ void ClevoService::kbdStartEffect()
     gKBDEffectTimer->cancelTimeout();
 
     gKBDAnimationBaseLevel = gKBDLevel[gKBLT & 3];
-
     gKBDAnimationPhase = 0;
     gKBDColorPhase = 0;
 
@@ -791,18 +790,8 @@ void ClevoService::kbdStartEffect()
 
     if (gKBDEffectMode == KBD_EFFECT_BREATHE)
     {
-        // Multi-color breathing starts with the selected palette color.
-        if (gKBDBreatheColorMode == KBD_BREATHE_MULTI_COLOR)
-        {
-            kbdSetColorRGB(
-                gKBDPalette[gKBDBreatheColorIndex][0],
-                gKBDPalette[gKBDBreatheColorIndex][1],
-                gKBDPalette[gKBDBreatheColorIndex][2]
-            );
-        }
-
-        // Start breathing at minimum brightness.
-        kbdSetHardwareLevel(KBD_BREATHE_MIN_LEVEL);
+        // Begin at zero RGB intensity.
+        kbdSetColorRGB(0, 0, 0);
     }
     else if (gKBDEffectMode == KBD_EFFECT_COLOR_CYCLE)
     {
@@ -830,21 +819,31 @@ void ClevoService::kbdStopEffect(bool restore)
     if (gKBDEffectTimer != NULL)
         gKBDEffectTimer->cancelTimeout();
 
-    gKBDEffectActive = false;
+    bool wasBreathe = (gKBDEffectMode == KBD_EFFECT_BREATHE);
 
+    gKBDEffectActive = false;
     gKBDAnimationPhase = 0;
     gKBDColorPhase = 0;
 
-    if (restore &&
-        !gKBDIsOFF &&
-        (gKBLT & KBD_ON_MASK) &&
-        !gKBDimmed &&
-        !gKBDFading)
+    if (!gKBDIsOFF && (gKBLT & KBD_ON_MASK))
     {
-        kbdSetHardwareLevel(gKBDLevel[gKBLT & 3]);
+        if (wasBreathe)
+        {
+            // Restore the full selected RGB color.
+            kbdSetColorRGB(
+                gKBDPalette[gKBDBreatheColorIndex][0],
+                gKBDPalette[gKBDBreatheColorIndex][1],
+                gKBDPalette[gKBDBreatheColorIndex][2]
+            );
+        }
+        else if (restore &&
+                 !gKBDimmed &&
+                 !gKBDFading)
+        {
+            kbdSetHardwareLevel(gKBDLevel[gKBLT & 3]);
+        }
     }
 }
-
 
 void ClevoService::kbdEffectTimerFired()
 {
@@ -865,47 +864,130 @@ void ClevoService::kbdEffectTimerFired()
 
     if (gKBDEffectMode == KBD_EFFECT_BREATHE)
     {
+        const UInt16 FADE_IN_STEPS = 70;
+        const UInt16 FADE_OUT_STEPS = 70;
+        const UInt16 COLOR_BLEND_STEPS = 3;
+
+        const UInt16 TOTAL_STEPS =
+            FADE_IN_STEPS + FADE_OUT_STEPS;
+
+        // Advance animation phase.
         gKBDAnimationPhase++;
 
-        if (gKBDAnimationPhase >= KBD_BREATHE_PHASE_STEPS)
-        {
+        if (gKBDAnimationPhase >= TOTAL_STEPS)
             gKBDAnimationPhase = 0;
 
-            // Advance color only after a complete fade cycle.
-            if (gKBDBreatheColorMode == KBD_BREATHE_MULTI_COLOR)
+        UInt16 phase = gKBDAnimationPhase;
+
+        // ---------------------------------------------
+        // CALCULATE RGB INTENSITY
+        // ---------------------------------------------
+
+        UInt32 position;
+
+        if (phase <= FADE_IN_STEPS)
+        {
+            // Fade in: 0 -> 255.
+            position = phase;
+        }
+        else
+        {
+            // Fade out: 255 -> 0.
+            position = TOTAL_STEPS - phase;
+        }
+
+        // Normalized smoothstep curve.
+        UInt64 smoothNumerator =
+            (UInt64)position *
+            position *
+            (3 * FADE_IN_STEPS - 2 * position);
+
+        UInt64 smoothDenominator =
+            (UInt64)FADE_IN_STEPS *
+            FADE_IN_STEPS *
+            FADE_IN_STEPS;
+
+        UInt8 intensity = (UInt8)(
+            (255 * smoothNumerator +
+             smoothDenominator / 2) /
+            smoothDenominator
+        );
+
+        // ---------------------------------------------
+        // DETERMINE BASE RGB COLOR
+        // ---------------------------------------------
+
+        UInt8 red =
+            gKBDPalette[gKBDBreatheColorIndex][0];
+
+        UInt8 green =
+            gKBDPalette[gKBDBreatheColorIndex][1];
+
+        UInt8 blue =
+            gKBDPalette[gKBDBreatheColorIndex][2];
+
+        // ---------------------------------------------
+        // MULTI COLOR: BLEND DURING FINAL FADE-OUT
+        // ---------------------------------------------
+
+        if (gKBDBreatheColorMode == KBD_BREATHE_MULTI_COLOR)
+        {
+            UInt8 colorIndex = gKBDBreatheColorIndex;
+            UInt8 nextColorIndex = (colorIndex + 1) % 7;
+
+            if (phase >= TOTAL_STEPS - COLOR_BLEND_STEPS)
             {
-                gKBDBreatheColorIndex++;
+                UInt16 colorProgress =
+                    phase - (TOTAL_STEPS - COLOR_BLEND_STEPS) + 1;
 
-                if (gKBDBreatheColorIndex >= 7)
-                    gKBDBreatheColorIndex = 0;
-
-                kbdSetColorRGB(
-                    gKBDPalette[gKBDBreatheColorIndex][0],
-                    gKBDPalette[gKBDBreatheColorIndex][1],
-                    gKBDPalette[gKBDBreatheColorIndex][2]
+                red = (UInt8)(
+                    (SInt32)gKBDPalette[colorIndex][0] +
+                    ((SInt32)gKBDPalette[nextColorIndex][0] -
+                     gKBDPalette[colorIndex][0]) *
+                    colorProgress / COLOR_BLEND_STEPS
                 );
+
+                green = (UInt8)(
+                    (SInt32)gKBDPalette[colorIndex][1] +
+                    ((SInt32)gKBDPalette[nextColorIndex][1] -
+                     gKBDPalette[colorIndex][1]) *
+                    colorProgress / COLOR_BLEND_STEPS
+                );
+
+                blue = (UInt8)(
+                    (SInt32)gKBDPalette[colorIndex][2] +
+                    ((SInt32)gKBDPalette[nextColorIndex][2] -
+                     gKBDPalette[colorIndex][2]) *
+                    colorProgress / COLOR_BLEND_STEPS
+                );
+
+                // Advance after completing the transition.
+                if (phase == TOTAL_STEPS - 1)
+                    gKBDBreatheColorIndex = nextColorIndex;
             }
         }
 
-        UInt32 phase = gKBDAnimationPhase;
+        // ---------------------------------------------
+        // APPLY RGB INTENSITY
+        // ---------------------------------------------
 
-        UInt32 position =
-            (phase <= 100) ? phase : (200 - phase);
+        UInt8 outputRed = (UInt8)(
+            ((UInt16)red * intensity + 127) / 255
+        );
 
-        UInt32 smooth =
-            position * position * (300 - 2 * position);
+        UInt8 outputGreen = (UInt8)(
+            ((UInt16)green * intensity + 127) / 255
+        );
 
-        UInt32 brightnessRange =
-            gKBDAnimationBaseLevel - KBD_BREATHE_MIN_LEVEL;
+        UInt8 outputBlue = (UInt8)(
+            ((UInt16)blue * intensity + 127) / 255
+        );
 
-        UInt32 brightness =
-            KBD_BREATHE_MIN_LEVEL +
-            (brightnessRange * smooth + 500000) / 1000000;
-
-        if (brightness > gKBDAnimationBaseLevel)
-            brightness = gKBDAnimationBaseLevel;
-
-        kbdSetHardwareLevel((UInt8)brightness);
+        kbdSetColorRGB(
+            outputRed,
+            outputGreen,
+            outputBlue
+        );
     }
 
     // -------------------------------------------------
@@ -914,8 +996,7 @@ void ClevoService::kbdEffectTimerFired()
 
     else if (gKBDEffectMode == KBD_EFFECT_COLOR_CYCLE)
     {
-        // 67 frames per color transition.
-        const UInt16 COLOR_TRANSITION_STEPS = 67;
+        const UInt16 COLOR_TRANSITION_STEPS = 35;
         const UInt16 COLOR_CYCLE_STEPS =
             7 * COLOR_TRANSITION_STEPS;
 
@@ -934,19 +1015,19 @@ void ClevoService::kbdEffectTimerFired()
             gKBDColorPhase % COLOR_TRANSITION_STEPS;
 
         SInt32 red =
-            gKBDPalette[colorIndex][0] +
+            (SInt32)gKBDPalette[colorIndex][0] +
             ((SInt32)gKBDPalette[nextColorIndex][0] -
              gKBDPalette[colorIndex][0]) *
             colorProgress / COLOR_TRANSITION_STEPS;
 
         SInt32 green =
-            gKBDPalette[colorIndex][1] +
+            (SInt32)gKBDPalette[colorIndex][1] +
             ((SInt32)gKBDPalette[nextColorIndex][1] -
              gKBDPalette[colorIndex][1]) *
             colorProgress / COLOR_TRANSITION_STEPS;
 
         SInt32 blue =
-            gKBDPalette[colorIndex][2] +
+            (SInt32)gKBDPalette[colorIndex][2] +
             ((SInt32)gKBDPalette[nextColorIndex][2] -
              gKBDPalette[colorIndex][2]) *
             colorProgress / COLOR_TRANSITION_STEPS;
@@ -957,7 +1038,7 @@ void ClevoService::kbdEffectTimerFired()
             (UInt8)blue
         );
 
-        // Intentionally no brightness command here.
+        // No brightness command in Color Cycle.
     }
 
     gKBDEffectTimer->setTimeoutMS(KBD_BREATHE_INTERVAL);
