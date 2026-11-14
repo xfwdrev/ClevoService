@@ -113,6 +113,8 @@ protected:
 
     // Effect state.
     bool gKBDEffectActive;
+    
+    bool gKBDEffectsEnabled;
 
     // Breathing state.
     UInt8 gKBDAnimationBaseLevel;
@@ -138,6 +140,11 @@ protected:
 
     bool gKBDFading;
     bool gKBDFadeOut;
+    
+    UInt8 gKBDFadeRed;
+    UInt8 gKBDFadeGreen;
+    UInt8 gKBDFadeBlue;
+    bool gKBDFadeUsesRGB;
 
     void kbdSetHardwareLevel(UInt8 level);
     void kbdStartFade(UInt8 targetLevel, bool fadeOut);

@@ -34,6 +34,8 @@ bool ClevoService::init(OSDictionary *dict)
     origCallback        = NULL;
     origSpecialCallback = NULL;
     
+    gKBDEffectsEnabled = true;
+    
     gKBDEffectTimer = NULL;
 
     gKBDAnimationBaseLevel = 0;
@@ -61,6 +63,11 @@ bool ClevoService::init(OSDictionary *dict)
 
     gKBDFading = false;
     gKBDFadeOut = false;
+    
+    gKBDFadeRed = 0;
+    gKBDFadeGreen = 0;
+    gKBDFadeBlue = 0;
+    gKBDFadeUsesRGB = false;
 
     return true;
 }
@@ -424,14 +431,11 @@ IOReturn ClevoService::message(
         switch (*myMsg)
         {
             case msgKbdChangeColor:
-                if (!gKBDIsOFF &&
-                    gKBDEffectMode == KBD_EFFECT_NONE)
+                if (!gKBDIsOFF && !gKBDEffectsEnabled)
                 {
                     gKBLT &= 0xFF;
-
                     if (color < 0x800)
                         gKBLT |= (color + 0x100);
-
                     kbdSetColor();
                 }
                 break;
@@ -652,24 +656,85 @@ void ClevoService::kbdStartFade(UInt8 targetLevel, bool fadeOut)
 
     gKBDFadeOut = fadeOut;
     gKBDFading = true;
-    
-    // Pause any active effect while performing a manual fade.
+
+    // Capture the selected static color.
+    gKBDFadeUsesRGB = true;
+
+    switch (gKBLT & 0xF00)
+    {
+        case 0x000: // Blue
+            gKBDFadeRed = 0;
+            gKBDFadeGreen = 0;
+            gKBDFadeBlue = 255;
+            break;
+
+        case 0x100: // Red
+            gKBDFadeRed = 255;
+            gKBDFadeGreen = 0;
+            gKBDFadeBlue = 0;
+            break;
+
+        case 0x200: // White
+            gKBDFadeRed = 255;
+            gKBDFadeGreen = 255;
+            gKBDFadeBlue = 255;
+            break;
+
+        case 0x300: // Pink
+            gKBDFadeRed = 255;
+            gKBDFadeGreen = 0;
+            gKBDFadeBlue = 255;
+            break;
+
+        case 0x400: // Light Blue
+            gKBDFadeRed = 0;
+            gKBDFadeGreen = 255;
+            gKBDFadeBlue = 255;
+            break;
+
+        case 0x500: // Green
+            gKBDFadeRed = 0;
+            gKBDFadeGreen = 255;
+            gKBDFadeBlue = 0;
+            break;
+
+        case 0x600: // Yellow
+            gKBDFadeRed = 255;
+            gKBDFadeGreen = 255;
+            gKBDFadeBlue = 0;
+            break;
+
+        case 0x700: // RGB sequence
+        case 0x800: // Random
+        default:
+            gKBDFadeUsesRGB = false;
+            break;
+    }
+
+    // Pause any active effect.
     kbdStopEffect(false);
 
     if (!fadeOut)
     {
         gKBDimmed = false;
 
-        // Ensure the keyboard is enabled before fading in.
-        kbdSetColor();
+        if (gKBDFadeUsesRGB)
+        {
+            ACPI_Send(0, SET_KB_LED, 0xE007F001);
+            kbdSetColorRGB(0, 0, 0);
+        }
+        else
+        {
+            kbdSetColor();
 
-        ACPI_Send(0, SET_KB_LED, 0xE007F001);
+            ACPI_Send(0, SET_KB_LED, 0xE007F001);
 
-        // Restore the current brightness before beginning the fade.
-        kbdSetHardwareLevel(gKBDFadeStartLevel);
+            kbdSetHardwareLevel(gKBDFadeStartLevel);
+        }
     }
 
-    if (gKBDFadeStartLevel == gKBDFadeTargetLevel)
+    if (!gKBDFadeUsesRGB &&
+        gKBDFadeStartLevel == gKBDFadeTargetLevel)
     {
         gKBDFading = false;
         gKBDimmed = fadeOut;
@@ -678,7 +743,18 @@ void ClevoService::kbdStartFade(UInt8 targetLevel, bool fadeOut)
 
     if (gKBDDimTimer == NULL)
     {
-        kbdSetHardwareLevel(targetLevel);
+        if (gKBDFadeUsesRGB)
+        {
+            kbdSetColorRGB(
+                fadeOut ? 0 : gKBDFadeRed,
+                fadeOut ? 0 : gKBDFadeGreen,
+                fadeOut ? 0 : gKBDFadeBlue
+            );
+        }
+        else
+        {
+            kbdSetHardwareLevel(targetLevel);
+        }
 
         gKBDFading = false;
         gKBDimmed = fadeOut;
@@ -715,38 +791,82 @@ void ClevoService::kbdDimTimerFired()
     if (gKBDFadeStep < KBD_FADE_STEPS)
         gKBDFadeStep++;
 
-    // Normalize animation progress to the range 0.0 - 1.0.
-    double t = (double)gKBDFadeStep / (double)KBD_FADE_STEPS;
+    double t =
+        (double)gKBDFadeStep / (double)KBD_FADE_STEPS;
 
-    // Smoothstep easing: 3t² - 2t³.
+    // Smoothstep: 3t² - 2t³.
     double eased = t * t * (3.0 - 2.0 * t);
 
-    SInt32 start = (SInt32)gKBDFadeStartLevel;
-    SInt32 target = (SInt32)gKBDFadeTargetLevel;
-    SInt32 difference = target - start;
+    if (gKBDFadeUsesRGB)
+    {
+        // Fade OUT: 255 -> 0.
+        // Fade IN: 0 -> 255.
+        double intensity = gKBDFadeOut
+            ? (1.0 - eased)
+            : eased;
 
-    SInt32 brightness =
-        start + (SInt32)(difference * eased + (difference >= 0 ? 0.5 : -0.5));
+        UInt8 red =
+            (UInt8)(gKBDFadeRed * intensity + 0.5);
 
-    if (brightness < 0)
-        brightness = 0;
+        UInt8 green =
+            (UInt8)(gKBDFadeGreen * intensity + 0.5);
 
-    if (brightness > 255)
-        brightness = 255;
+        UInt8 blue =
+            (UInt8)(gKBDFadeBlue * intensity + 0.5);
 
-    kbdSetHardwareLevel((UInt8)brightness);
+        kbdSetColorRGB(red, green, blue);
+    }
+    else
+    {
+        // Original hardware brightness fade.
+        SInt32 start = (SInt32)gKBDFadeStartLevel;
+        SInt32 target = (SInt32)gKBDFadeTargetLevel;
+        SInt32 difference = target - start;
+
+        SInt32 brightness =
+            start + (SInt32)(
+                difference * eased +
+                (difference >= 0 ? 0.5 : -0.5)
+            );
+
+        if (brightness < 0)
+            brightness = 0;
+
+        if (brightness > 255)
+            brightness = 255;
+
+        kbdSetHardwareLevel((UInt8)brightness);
+    }
 
     if (gKBDFadeStep >= KBD_FADE_STEPS)
     {
-        // Guarantee the exact requested final brightness.
-        kbdSetHardwareLevel(gKBDFadeTargetLevel);
+        if (gKBDFadeUsesRGB)
+        {
+            // Guarantee exact final RGB intensity.
+            if (gKBDFadeOut)
+                kbdSetColorRGB(0, 0, 0);
+            else
+                kbdSetColorRGB(
+                    gKBDFadeRed,
+                    gKBDFadeGreen,
+                    gKBDFadeBlue
+                );
+        }
+        else
+        {
+            kbdSetHardwareLevel(gKBDFadeTargetLevel);
+        }
 
         gKBDFading = false;
         gKBDimmed = gKBDFadeOut;
-        
-        // Resume the selected effect after a completed fade-in.
-        if (!gKBDimmed && gKBDEffectMode != KBD_EFFECT_NONE)
+
+        // Resume effects only when they are enabled.
+        if (!gKBDimmed &&
+            gKBDEffectsEnabled &&
+            gKBDEffectMode != KBD_EFFECT_NONE)
+        {
             kbdStartEffect();
+        }
 
         DEBUG_LOG(
             "%s: Fade %s completed: %u\n",
@@ -761,12 +881,12 @@ void ClevoService::kbdDimTimerFired()
     gKBDDimTimer->setTimeoutMS(KBD_FADE_INTERVAL);
 }
 
-
 #pragma mark ---------- Keyboard Effects ----------
 
 void ClevoService::kbdStartEffect()
 {
-    if (gKBDEffectMode == KBD_EFFECT_NONE ||
+    if (!gKBDEffectsEnabled ||
+        gKBDEffectMode == KBD_EFFECT_NONE ||
         gKBDEffectTimer == NULL ||
         gKBDIsOFF ||
         !(gKBLT & KBD_ON_MASK) ||
@@ -832,9 +952,9 @@ void ClevoService::kbdStopEffect(bool restore)
 
     if (!gKBDIsOFF && (gKBLT & KBD_ON_MASK))
     {
-        if (wasBreathe)
+        if (restore && wasBreathe && gKBDEffectsEnabled)
         {
-            // Restore the full selected RGB color.
+            // Restore the breathing effect's selected base color.
             kbdSetColorRGB(
                 gKBDPalette[gKBDBreatheColorIndex][0],
                 gKBDPalette[gKBDBreatheColorIndex][1],
@@ -1056,9 +1176,14 @@ void ClevoService::kbdSetUpBacklight()
 {
     if (gKBLT & KBD_ON_MASK)
     {
+        // Keyboard is being initialized in the ON state.
+        gKBDimmed = false;
+
         kbdSetColor();
         kbdONOFF();
-        kbdLightLevel(gKBLT);
+
+        // Apply the saved brightness and start the selected effect.
+        kbdLightLevel(gKBLT & 3);
     }
     else
     {
@@ -1171,30 +1296,25 @@ void ClevoService::kbdLightLevel(UInt8 newLevel)
 {
     newLevel &= 3;
 
-    // Stop any running fade when the user manually changes brightness.
-    if (gKBDDimTimer != NULL)
-        gKBDDimTimer->cancelTimeout();
-
-    gKBDFading = false;
-    gKBDFadeOut = false;
-    gKBDimmed = false;
-
-    // Preserve the selected brightness in KBLT.
     gKBLT &= 0xFF0;
     gKBLT |= newLevel;
 
-    if (gKBDEffectMode == KBD_EFFECT_BREATHE)
+    // Run breathing only when effects are enabled.
+    if (gKBDEffectsEnabled &&
+        gKBDEffectMode == KBD_EFFECT_BREATHE)
     {
-        // Breathing controls brightness itself.
         kbdStartEffect();
     }
     else
     {
-        // Color Cycle and normal mode preserve manual brightness.
+        // Normal hardware brightness control.
         kbdSetHardwareLevel(gKBDLevel[newLevel]);
 
-        if (gKBDEffectMode == KBD_EFFECT_COLOR_CYCLE)
+        if (gKBDEffectsEnabled &&
+            gKBDEffectMode == KBD_EFFECT_COLOR_CYCLE)
+        {
             kbdStartEffect();
+        }
     }
 }
 
@@ -1566,19 +1686,19 @@ void ClevoService::loadConfiguration()
 
     if (osBool)
         gKBDJustDim = osBool->isTrue();
-    
-    // Backward compatibility with the old breathing setting.
-    bool legacyBreatheEnabled = false;
 
+    // Load master effects switch.
     osBool = OSDynamicCast(
         OSBoolean,
-        config->getObject("KbdBreathingActive")
+        config->getObject("KbdEffectsActive")
     );
 
     if (osBool)
-        legacyBreatheEnabled = osBool->isTrue();
+        gKBDEffectsEnabled = osBool->isTrue();
+    else
+        gKBDEffectsEnabled = false;
 
-    // Load the selected effect mode.
+    // Load selected effect mode.
     OSNumber *effectMode = OSDynamicCast(
         OSNumber,
         config->getObject("KbdEffectMode")
@@ -1593,10 +1713,7 @@ void ClevoService::loadConfiguration()
     }
     else
     {
-        // Old configurations still enable Breathe.
-        gKBDEffectMode = legacyBreatheEnabled
-            ? KBD_EFFECT_BREATHE
-            : KBD_EFFECT_NONE;
+        gKBDEffectMode = KBD_EFFECT_NONE;
     }
 
     // Load the Breathe color mode.
