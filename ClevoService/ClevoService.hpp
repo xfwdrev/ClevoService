@@ -145,6 +145,9 @@ protected:
     UInt8 gKBDFadeGreen;
     UInt8 gKBDFadeBlue;
     bool gKBDFadeUsesRGB;
+    
+    UInt8 gKBDFadeIntensity;
+    bool gKBDFadeWithEffect;
 
     void kbdSetHardwareLevel(UInt8 level);
     void kbdStartFade(UInt8 targetLevel, bool fadeOut);
