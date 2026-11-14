@@ -424,7 +424,8 @@ IOReturn ClevoService::message(
         switch (*myMsg)
         {
             case msgKbdChangeColor:
-                if (!gKBDIsOFF)
+                if (!gKBDIsOFF &&
+                    gKBDEffectMode == KBD_EFFECT_NONE)
                 {
                     gKBLT &= 0xFF;
 
@@ -790,9 +791,13 @@ void ClevoService::kbdStartEffect()
 
     if (gKBDEffectMode == KBD_EFFECT_BREATHE)
     {
+        // Apply the selected KbdLevels brightness.
+        kbdSetHardwareLevel(gKBDAnimationBaseLevel);
+
         // Begin at zero RGB intensity.
         kbdSetColorRGB(0, 0, 0);
     }
+
     else if (gKBDEffectMode == KBD_EFFECT_COLOR_CYCLE)
     {
         // Color cycle must not alter the selected brightness.
